@@ -176,6 +176,7 @@ def web_search_func(sent,aircor):#根据query返回页面
     
     result_dict = {}
     text_result_dict = {}
+    synonyms_result_dict = {}
     word_list = []
     subkey_to_text = {}
     k = 0
@@ -189,11 +190,19 @@ def web_search_func(sent,aircor):#根据query返回页面
                 if aircor + "@" + kk + "@" + key in result_dict:
                     continue
                 for word in seg_list_without_stopword:
+                    synonyms_list = get_synonyms(word)
                     if word in key: #标题
                         if aircor + "@" + kk + "@" + key not in result_dict:
                             result_dict[aircor + "@" + kk + "@" + key] = 1
                         else:
                             result_dict[aircor + "@" + kk + "@" + key] += 1
+                    else:#该词不在标题中，查看同义词是否在标题
+                        for synonyms_word in synonyms_list:
+                            if synonyms_word in key:
+                                if aircor + "@" + kk + "@" + key not in synonyms_result_dict:
+                                    synonyms_result_dict[aircor + "@" + kk + "@" + key] = 1
+                                else:
+                                    synonyms_result_dict[aircor + "@" + kk + "@" + key] += 1
                 for sub_dict in json_data[aircor][kk][key]:
                     for sub_key in sub_dict:
                         if aircor + "@" + kk + "@" + key + "@" + sub_key in result_dict:
@@ -208,13 +217,23 @@ def web_search_func(sent,aircor):#根据query返回页面
                                 subkey_to_text[k] = sub_key
                                 k += 1
                         except Exception as e:
-                                print(e)
+                                #print(e)
+                                pass
                         for word in seg_list_without_stopword:
+                            synonyms_list = get_synonyms(word)
                             if word in sub_key:
                                 if aircor + "@" + kk + "@" + key + "@" + sub_key not in result_dict:
                                     result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] = 1
                                 else:
                                     result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] += 1
+                            else:#该词不在标题中，查看同义词是否在标题
+                                for synonyms_word in synonyms_list:
+                                    if synonyms_word in sub_key:
+                                        if aircor + "@" + kk + "@" + key + "@" + sub_key not in synonyms_result_dict:
+                                            synonyms_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] = 1
+                                        else:
+                                            synonyms_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] += 1
+                                
                             if word in sub_key_text:
                                 if aircor + "@" + kk + "@" + key + "@" + sub_key not in text_result_dict:
                                     text_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] = 1
@@ -233,26 +252,34 @@ def web_search_func(sent,aircor):#根据query返回页面
             #print("\tWord: {}, TF-IDF: {}".format(word, round(score, 5)))
             score_num += round(score,5)
         text_tfidf_dict[subkey_to_text[i]] = score_num
-
+    print(synonyms_result_dict)
     result_score = {}
     for word in result_dict:
         result_score[word] = result_dict[word] * 10
+    for word in synonyms_result_dict:
+        if word in result_score:
+            result_score[word] += synonyms_result_dict[word] * 5
+        else:
+            result_score[word] = synonyms_result_dict[word] * 5
     for word in text_result_dict:
         if word in result_score:
             result_score[word] += text_result_dict[word]
         else:
             result_score[word] = text_result_dict[word]
+    
     for word in result_score:
         if word.split("@")[-1] in text_tfidf_dict:
             result_score[word] += text_tfidf_dict[word.split("@")[-1]] * 0.5
-    print(result_score)
+    #print(result_score)
     a = sorted(result_score.items(), key=lambda x: x[1], reverse=True)
 
     result_list = []
     result_score_list = []
+    if a != []:
+        max_score = a[0][1]
     for result_set in a:
         air_name = ""
-        if result_set[1] > 10:
+        if (result_set[1] > 10 and max_score > 10) or max_score < 10:
             result_score_list.append(result_set)
     #         json_name = get_target_value(result_set[0],json_data,[])
     #         for aircor_name in json_data:
@@ -262,9 +289,10 @@ def web_search_func(sent,aircor):#根据query返回页面
     #             result_list.append({"title":result_set[0],"source":air_name, "text":json_to_str(sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name[0])})
     # #print(result_list)
     result_score_list_str = ""
+    #print(result_score_list)
     for item in result_score_list:
         url_str = "/api/content_search?query=" + item[0]
         result_score_list_str = result_score_list_str + '<a href=' + url_str + '>'  + str(item)  + '</a><br/>'
-    print(result_score_list_str)
+    #print(result_score_list_str)
     return result_score_list_str
     
