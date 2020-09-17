@@ -12,6 +12,7 @@ import jieba
 import re
 import math
 import collections
+from ume_neo4j.ciLin import CilinSimilarity
 cop = re.compile("[^\u4e00-\u9fa5^，。,]") # 匹配不是中文、大小写、数字的其他字符
 string1 = '@ad&*jfad张132（www）。。。'
 string1 = cop.sub('', string1) #将string1中匹配到的字符替换成空字符
@@ -136,6 +137,21 @@ def content_search_func(sent): #返回文本内容
             print(e)
     return result
             
+synonym_handler =  CilinSimilarity()
+
+def get_synonyms(word):#同义词
+    synonyms = set()
+    if word not in synonym_handler.vocab:
+        print(word, '未被词林词林收录！')
+    else:
+        codes = synonym_handler.word_code[word]
+        for code in codes:
+            key = synonym_handler.code_word[code]
+            synonyms.update(key)
+        if word in synonyms:
+            synonyms.remove(word)
+
+    return list(synonyms)
 
 def web_search(request): #query检索
     sent = request.GET.get("query", "托运行李")
