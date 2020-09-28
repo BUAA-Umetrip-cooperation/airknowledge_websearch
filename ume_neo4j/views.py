@@ -295,7 +295,8 @@ def web_search_func(sent,aircor):#根据query返回页面
         max_score = a[0][1]
     for result_set in a:
         air_name = ""
-        if (result_set[1] > 10 and max_score > 10) or max_score < 10:
+        if result_set[1] > 10 :
+        #if (result_set[1] > 10 and max_score > 10) or max_score < 10:
             result_score_list.append(result_set)
     #         json_name = get_target_value(result_set[0],json_data,[])
     #         for aircor_name in json_data:
