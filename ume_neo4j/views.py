@@ -449,8 +449,8 @@ def web_search_func(sent,aircor):#根据query返回页面
             description,high_line = "",[]
         every_score_str = "text_score:" + str(text_score) + ",synonyms_score: " + str(synonyms_score) + ",BM25_score:" + str(BM25_score)
         description_str = ",description:" + description + "high_line:" + str(high_line)
-        result_score_list_str =  '<a href=' + url_str + '>'  + str(item)  +  '</a><br/>'
-        final_result_list.append({"title":result_score_list_str,"content":description + "...","high_line":high_line})
+        result_score_list_str =  '<a href=' + url_str + '>'  + str(item[0].split("@")[-1])  +  '</a>'
+        final_result_list.append({"title":result_score_list_str,"source":item[0].split("@")[0],"score":item[1],"content":description + "...","high_line":high_line})
     #print(result_score_list_str)
     return final_result_list
     
