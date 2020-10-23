@@ -7,12 +7,59 @@ import urllib.request
 import sys
 import requests, json
 import os
-
+import xmltodict
 import jieba
 import re
 import math
 import collections
 from ume_neo4j.ciLin import CilinSimilarity
+
+import math
+import jieba
+
+class BM25(object):
+
+    def __init__(self, docs):
+        self.D = len(docs)
+        self.avgdl = sum([len(doc)+0.0 for doc in docs]) / self.D
+        self.docs = docs
+        self.f = []  # 列表的每一个元素是一个dict，dict存储着一个文档中每个词的出现次数
+        self.df = {} # 存储每个词及出现了该词的文档数量
+        self.idf = {} # 存储每个词的idf值
+        self.k1 = 1.5
+        self.b = 0.75
+        self.init()
+
+    def init(self):
+        for doc in self.docs:
+            tmp = {}
+            for word in doc:
+                tmp[word] = tmp.get(word, 0) + 1  # 存储每个文档中每个词的出现次数
+            self.f.append(tmp)
+            for k in tmp.keys():
+                self.df[k] = self.df.get(k, 0) + 1
+        for k, v in self.df.items():
+            self.idf[k] = math.log(self.D-v+0.5)-math.log(v+0.5)
+
+    def sim(self, doc, index):
+        score = 0
+        for word in doc:
+            if word not in self.f[index]:
+                continue
+            d = len(self.docs[index])
+            score += (self.idf[word]*self.f[index][word]*(self.k1+1)
+                      / (self.f[index][word]+self.k1*(1-self.b+self.b*d
+                                                      / self.avgdl)))
+        return score
+
+    def simall(self, doc):
+        scores = []
+        for index in range(self.D):
+            score = self.sim(doc, index)
+            scores.append(score)
+        return scores
+
+
 cop = re.compile("[^\u4e00-\u9fa5^，。,]") # 匹配不是中文、大小写、数字的其他字符
 string1 = '@ad&*jfad张132（www）。。。'
 string1 = cop.sub('', string1) #将string1中匹配到的字符替换成空字符
@@ -102,6 +149,32 @@ def content_search(request): #返回文本内容
     response["Access-Control-Allow-Origin"] = "*"
     return response
 
+def json_to_xml(json_str):
+    """ 传入字典字符串或字典，返回xml字符串 """
+    xml_str = ''
+    if type(json_str) == dict:
+        dic = json_str
+    else:
+        dic = json.loads(json_str)
+    try:
+        xml_str = xmltodict.unparse(dic, encoding='utf-8')
+        xml_str = xml_process(xml_str)
+    except Exception as e:
+        xml_str = xmltodict.unparse({'request': dic}, encoding='utf-8')  # request可根据需求修改，目的是为XML字符串提供顶层标签 , pretty=1
+        xml_str = xml_process(xml_str)
+    finally:
+        return xml_str
+
+
+# 删除xml中的多余字符
+def xml_process(xml_str):
+    if xml_str:
+        stop_list = ["\t\t", "\n\n", "<div></div>", "<ul></ul>", "<li></li>"]
+        for stop_word in stop_list:
+            xml_str = xml_str.replace(stop_word, "")
+    return xml_str
+
+
 def content_search_func(sent): #返回文本内容
     result = ""
     if "@" in sent:
@@ -125,16 +198,27 @@ def content_search_func(sent): #返回文本内容
                 fp.close()
                 if json_name in UrlFile_map_data:
                     json_name = UrlFile_map_data[json_name]
-                result = json_to_str(sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name)
+                print(json_name)
+                if "http" not in json_name:
+                    json_name = sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name
+                    result = json_to_str(json_name)
+                    result = str(json_to_xml(result))  # json转成xml后使用
+                    print(result)
+                else:
+                    html = "<a href='{}'>{}<a>".format(json_name, sent)
+                    return html
+                #result = json_to_str(sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name)
         except Exception as e:
             result = str(e)
             print(e)
+            return "content_search_func erorr"
     else:
         try:
             result = json_to_str(sys.path[0] + '/stastic/webSearch_data/json_data/' + sent)
         except Exception as e:
             result = str(e)
             print(e)
+            return "content_search_func erorr"
     return result
             
 synonym_handler =  CilinSimilarity()
@@ -162,12 +246,35 @@ def web_search(request): #query检索
             sent = sent.replace(key,"")
         if aircor_dict[key] in sent:
             sent = sent.replace(aircor_dict[key],"")
-    print(sent)
+    
     result_list = web_search_func(sent,aircor)
 
     response = HttpResponse(json.dumps(result_list, ensure_ascii=False))
     response["Access-Control-Allow-Origin"] = "*"
     return response
+
+def get_query_description(query,text):#获得title下关于query的description
+    #print(query,text)
+    s = BM25(text)
+    score = s.simall(query)
+    result_score = {}
+    for i in range(len(text)):
+        result_score[text[i]] = score[i]
+    a = sorted(result_score.items(), key=lambda x: x[1], reverse=True)
+    result_str = ""
+    str_index = text.index(a[0][0])
+    result_str = "".join(text[str_index:])
+    high_line = []
+    if len(result_str) < 50:
+        for word in query:
+            if word in result_str:
+                high_line.append(word)
+        return result_str,high_line
+    else:
+        for word in query:
+            if word in result_str[:50]:
+                high_line.append(word)
+        return result_str[:50],high_line
 
 def web_search_func(sent,aircor):#根据query返回页面
     # 读取json文件内容,返回字典格式
@@ -195,6 +302,7 @@ def web_search_func(sent,aircor):#根据query返回页面
     synonyms_result_dict = {}
     word_list = []
     subkey_to_text = {}
+    doc = {}#BM25
     k = 0
     if aircor == -1:
         aircor_list = ["海南航空" , "南方航空", "中国国际航空"]
@@ -232,6 +340,7 @@ def web_search_func(sent,aircor):#根据query返回页面
                                 word_list.append(jieba.lcut(sub_key_text,cut_all = False))#对文本进行分词
                                 subkey_to_text[k] = sub_key
                                 k += 1
+                                doc[aircor + "@" + kk + "@" + key + "@" + sub_key] = jieba.lcut(sub_key_text,cut_all = False)
                         except Exception as e:
                                 #print(e)
                                 pass
@@ -255,20 +364,31 @@ def web_search_func(sent,aircor):#根据query返回页面
                                     text_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] = 1
                                 else:
                                     text_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] += 1
-    countlist = []
-    for i in range(len(word_list)):
-        count = collections.Counter(word_list[i])
-        countlist.append(count)
-    text_tfidf_dict = {}
-    for i, count in enumerate(countlist):
-        scores = {word: tfidf(word, count, countlist) for word in seg_list_without_stopword}
-        sorted_words = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        score_num = 0
-        for word, score in sorted_words[:]:
-            #print("\tWord: {}, TF-IDF: {}".format(word, round(score, 5)))
-            score_num += round(score,5)
-        text_tfidf_dict[subkey_to_text[i]] = score_num
-    print(synonyms_result_dict)
+    # countlist = []  #TF-IDF
+    # for i in range(len(word_list)):
+    #     count = collections.Counter(word_list[i])
+    #     countlist.append(count)
+    # text_tfidf_dict = {}
+    # for i, count in enumerate(countlist):
+    #     scores = {word: tfidf(word, count, countlist) for word in seg_list_without_stopword}
+    #     sorted_words = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    #     score_num = 0
+    #     for word, score in sorted_words[:]:
+    #         #print("\tWord: {}, TF-IDF: {}".format(word, round(score, 5)))
+    #         score_num += round(score,5)
+    #     text_tfidf_dict[subkey_to_text[i]] = score_num
+    # print(synonyms_result_dict)
+    doc_title = []
+    doc_content = []
+    for key in doc:
+        doc_title.append(key)
+        doc_content.append(doc[key])
+    s = BM25(doc_content)
+    BM25_score = s.simall(seg_list_without_stopword)
+    BM25_score_dict = {}
+    for i in range(len(doc_title)):
+        BM25_score_dict[doc_title[i]] = BM25_score[i]
+    
     result_score = {}
     for word in result_dict:
         result_score[word] = result_dict[word] * 10
@@ -277,15 +397,20 @@ def web_search_func(sent,aircor):#根据query返回页面
             result_score[word] += synonyms_result_dict[word] * 5
         else:
             result_score[word] = synonyms_result_dict[word] * 5
-    for word in text_result_dict:
+    for word in BM25_score_dict:
         if word in result_score:
-            result_score[word] += text_result_dict[word]
+            result_score[word] += BM25_score_dict[word]
         else:
-            result_score[word] = text_result_dict[word]
+            result_score[word] = BM25_score_dict[word]
+    # for word in text_result_dict:
+    #     if word in result_score:
+    #         result_score[word] += text_result_dict[word]
+    #     else:
+    #         result_score[word] = text_result_dict[word]
     
-    for word in result_score:
-        if word.split("@")[-1] in text_tfidf_dict:
-            result_score[word] += text_tfidf_dict[word.split("@")[-1]] * 0.5
+    # for word in result_score:
+    #     if word.split("@")[-1] in text_tfidf_dict:
+    #         result_score[word] += text_tfidf_dict[word.split("@")[-1]] * 0.5
     #print(result_score)
     a = sorted(result_score.items(), key=lambda x: x[1], reverse=True)
 
@@ -295,7 +420,7 @@ def web_search_func(sent,aircor):#根据query返回页面
         max_score = a[0][1]
     for result_set in a:
         air_name = ""
-        if result_set[1] > 10 :
+        if result_set[1] > 3 :
         #if (result_set[1] > 10 and max_score > 10) or max_score < 10:
             result_score_list.append(result_set)
     #         json_name = get_target_value(result_set[0],json_data,[])
@@ -305,11 +430,27 @@ def web_search_func(sent,aircor):#根据query返回页面
     #         if isinstance(json_name[0],str):
     #             result_list.append({"title":result_set[0],"source":air_name, "text":json_to_str(sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name[0])})
     # #print(result_list)
-    result_score_list_str = ""
+    #result_score_list_str = ""
     #print(result_score_list)
+    final_result_list = []
     for item in result_score_list:
+        result_score_list_str = ""
         url_str = "/api/content_search?query=" + item[0]
-        result_score_list_str = result_score_list_str + '<a href=' + url_str + '>'  + str(item)  + '</a><br/>'
+        text_score = result_dict[item[0]] * 10 if item[0] in result_dict else 0
+        synonyms_score = synonyms_result_dict[item[0]] * 5 if item[0] in synonyms_result_dict else 0
+        BM25_score = BM25_score_dict[item[0]] if item[0] in BM25_score_dict else 0
+        if item[0] in doc:
+            item_text = "".join(doc[item[0]])
+            item_text_list = []
+            for t in item_text.split("。"):
+                item_text_list.append(t.strip("，"))
+            description,high_line = get_query_description(seg_list_without_stopword,item_text_list)
+        else:
+            description,high_line = "",[]
+        every_score_str = "text_score:" + str(text_score) + ",synonyms_score: " + str(synonyms_score) + ",BM25_score:" + str(BM25_score)
+        description_str = ",description:" + description + "high_line:" + str(high_line)
+        result_score_list_str =  '<a href=' + url_str + '>'  + str(item)  +  '</a><br/>'
+        final_result_list.append({"title":result_score_list_str,"content":description + "...","high_line":high_line})
     #print(result_score_list_str)
-    return result_score_list_str
+    return final_result_list
     
