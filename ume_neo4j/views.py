@@ -1,6 +1,6 @@
 import json
 import sys
-sys.path.append(sys.path[0] + "/KM_KBQA_2/src/main/")
+sys.path.append(sys.path[0] + "/bert-utils-master/")
 #from service_NLP.qcls.QCLS import check_QCLS
 from django.http import HttpResponse
 import urllib.request
@@ -14,8 +14,16 @@ import math
 import collections
 from ume_neo4j.ciLin import CilinSimilarity
 
+import extract_feature
+import numpy as np
+import time
+import multiprocessing
+from multiprocessing import Pool # 导入多进程中的进程池
+
 import math
 import jieba
+import xlrd
+import xlwt
 
 class BM25(object):
 
@@ -87,7 +95,7 @@ def check_aircor(sent):#航空公司
     for key in aircor_dict:
         if key in sent or aircor_dict[key] in sent:
             return key
-    return -1
+    return "所有航司"
 
 
 def get_target_value(key, dic, tmp_list):
@@ -198,12 +206,12 @@ def content_search_func(sent): #返回文本内容
                 fp.close()
                 if json_name in UrlFile_map_data:
                     json_name = UrlFile_map_data[json_name]
-                print(json_name)
+                
                 if "http" not in json_name:
                     json_name = sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name
                     result = json_to_str(json_name)
                     result = str(json_to_xml(result))  # json转成xml后使用
-                    print(result)
+                   
                 else:
                     html = "<a href='{}'>{}<a>".format(json_name, sent)
                     return html
@@ -226,7 +234,8 @@ synonym_handler =  CilinSimilarity()
 def get_synonyms(word):#同义词
     synonyms = set()
     if word not in synonym_handler.vocab:
-        print(word, '未被词林词林收录！')
+        pass
+        #print(word, '未被词林词林收录！')
     else:
         codes = synonym_handler.word_code[word]
         for code in codes:
@@ -276,7 +285,107 @@ def get_query_description(query,text):#获得title下关于query的description
                 high_line.append(word)
         return result_str[:50],high_line
 
-def web_search_func(sent,aircor):#根据query返回页面
+
+def bit_product_sum(x, y):
+    return sum([item[0] * item[1] for item in zip(x, y)])
+
+def cosine_similarity(x, y, norm=False):
+    """ 计算两个向量x和y的余弦相似度 """
+    assert len(x) == len(y), "len(x) != len(y)"
+    zero_list = [0] * len(x)
+    if (x == zero_list).all() or (y == zero_list).all():
+        return float(1) if x == y else float(0)
+
+    # method 1
+    res = np.array([[x[i] * y[i], x[i] * x[i], y[i] * y[i]] for i in range(len(x))])
+    cos = sum(res[:, 0]) / (np.sqrt(sum(res[:, 1])) * np.sqrt(sum(res[:, 2])))
+
+    return 0.5 * cos + 0.5 if norm else cos  # 归一化到[0, 1]区间内
+
+bertvector_model = None
+
+def get_bertvector():
+    global bertvector_model
+    if bertvector_model is None:
+        bertvector_model = extract_feature.BertVector()
+        print("load bertvector_model successfull!")
+    return bertvector_model
+
+query2encode = {}
+def get_query2encode():
+    global query2encode
+    if query2encode == {}:
+        bert = get_bertvector()
+        data = xlrd.open_workbook(sys.path[0] + '/stastic/webSearch_data/intent_data.xlsx')
+        table = data.sheet_by_index(0)
+        rows = table.nrows
+        for i in range(1,rows):
+            row_data = table.row_values(i)
+            if row_data[0] != "" and "搜索" in row_data[4]:
+                if row_data[3] != "":
+                    intent = row_data[1] + "@" + row_data[2] + "@" + row_data[3]
+                else:
+                    intent = row_data[1] + "@" + row_data[2]
+                if intent not in query2encode:
+                    query2encode[intent] = [ bert.encode([row_data[0]])[0] ]
+                else:
+                    query2encode[intent].append(bert.encode([row_data[0]])[0])
+        # with open(sys.path[0] + "/stastic/webSearch_data/query2encode.json", "w", encoding='utf-8') as fp:
+        #     fp.write(json.dumps(query2encode, ensure_ascii=False, indent=4))
+    return query2encode
+
+def intent_recognization(request): #意图识别
+    sent = request.GET.get("sent", "托运行李")
+    aircor = request.GET.get("aircor", "所有航司")
+
+    result_list = intent_recognization_func(sent,aircor)
+
+    response = HttpResponse(json.dumps(result_list, ensure_ascii=False))
+    response["Access-Control-Allow-Origin"] = "*"
+    return response
+
+def intent_recognization_func(sent):#意图识别
+    max_score = 0
+    intent = "未识别到意图"
+    max_score_list = []
+    bert = get_bertvector()
+    query_encode = bert.encode([sent])
+    query2encode = get_query2encode()
+    for key in query2encode:
+        score_list = []
+        for q_encode in query2encode[key]:
+            score_list.append(cosine_similarity(query_encode[0],q_encode))
+        score_sum = 0
+        score_list.sort(reverse=True)
+        if len(score_list) > 5:
+            score_list = score_list[:5]
+        for score in score_list:
+            score_sum += score
+        ave_score = score_sum/len(score_list)
+        #print(cosine_similarity(query_encode[0],query2encode[key][0]))
+        if max_score < ave_score:
+            max_score = ave_score
+            intent = key
+            max_score_list = score_list
+    #print(max_score,intent,max_score_list)
+    return max_score,intent
+    # bert = get_bertvector()
+    # v1 = bert.encode(["可以提前选航班座位吗"])
+    # v2 = bert.encode(["哪里可以提前选座位"])
+    # #print(v1,v2)
+    # print(cosine_similarity(v1[0],v2[0]))
+
+def str_match(request): #字符串匹配
+    sent = request.GET.get("sent", "托运行李")
+    aircor = request.GET.get("aircor", "所有航司")
+
+    result_list = str_match_func(sent,aircor)
+
+    response = HttpResponse(json.dumps(result_list, ensure_ascii=False))
+    response["Access-Control-Allow-Origin"] = "*"
+    return response        
+
+def str_match_func(sent,aircor_name):#字符串匹配
     # 读取json文件内容,返回字典格式
     with open(sys.path[0] + '/stastic/webSearch_data/all_data.json','r',encoding='utf8') as fp:
         json_data = json.load(fp)
@@ -304,10 +413,11 @@ def web_search_func(sent,aircor):#根据query返回页面
     subkey_to_text = {}
     doc = {}#BM25
     k = 0
-    if aircor == -1:
+    print("aircor的值为:",aircor_name)
+    if aircor_name == "所有航司":
         aircor_list = ["海南航空" , "南方航空", "中国国际航空"]
     else:
-        aircor_list = [aircor]
+        aircor_list = [aircor_name]
     for aircor in aircor_list:
         for kk in json_data[aircor]:
             for key in json_data[aircor][kk]:
@@ -364,20 +474,7 @@ def web_search_func(sent,aircor):#根据query返回页面
                                     text_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] = 1
                                 else:
                                     text_result_dict[aircor + "@" + kk + "@" + key + "@" + sub_key] += 1
-    # countlist = []  #TF-IDF
-    # for i in range(len(word_list)):
-    #     count = collections.Counter(word_list[i])
-    #     countlist.append(count)
-    # text_tfidf_dict = {}
-    # for i, count in enumerate(countlist):
-    #     scores = {word: tfidf(word, count, countlist) for word in seg_list_without_stopword}
-    #     sorted_words = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    #     score_num = 0
-    #     for word, score in sorted_words[:]:
-    #         #print("\tWord: {}, TF-IDF: {}".format(word, round(score, 5)))
-    #         score_num += round(score,5)
-    #     text_tfidf_dict[subkey_to_text[i]] = score_num
-    # print(synonyms_result_dict)
+    
     doc_title = []
     doc_content = []
     for key in doc:
@@ -402,43 +499,126 @@ def web_search_func(sent,aircor):#根据query返回页面
             result_score[word] += BM25_score_dict[word]
         else:
             result_score[word] = BM25_score_dict[word]
-    # for word in text_result_dict:
-    #     if word in result_score:
-    #         result_score[word] += text_result_dict[word]
-    #     else:
-    #         result_score[word] = text_result_dict[word]
     
-    # for word in result_score:
-    #     if word.split("@")[-1] in text_tfidf_dict:
-    #         result_score[word] += text_tfidf_dict[word.split("@")[-1]] * 0.5
-    #print(result_score)
+    return result_score,doc,seg_list_without_stopword
+
+def get_intent_rec_result(sent,aircor):
+    github_url = "http://127.0.0.1:12345/api/intent_recognization?sent=" + sent + "&aircor=" + str(aircor)
+    r = requests.get(github_url)
+    result_list = []
+    for item in r.json():
+        result_list.append(item)
+    #print("结果:",result_list)
+    return result_list
+
+def get_str_match_result(sent,aircor):
+    github_url = "http://127.0.0.1:12345/api/str_match?sent=" + sent + "&aircor=" + str(aircor)
+    r = requests.get(github_url)
+    result_list = []
+    for item in r.json():
+        result_list.append(item)
+    #print("结果:",result_list)
+    return result_list
+
+def web_search_func(sent,aircor_name):#根据query返回页面
+
+    start = time.time()
+    # pool = Pool(processes=2) #多进程
+    # q = []
+    # q.append(pool.apply_async(get_intent_rec_result, args=(str(sent),aircor_name)))
+    # q.append(pool.apply_async(get_str_match_result, args=(str(sent), aircor_name)))
+    # for item in q:
+    #     r = item.get()
+    #     #print("r:",r)
+    #     if len(r) == 2:
+    #         intent_score,intent = r[0],r[1]
+    #     else:
+    #         result_score,doc,seg_list_without_stopword = r[0],r[1],r[2]
+    # pool.close()
+    # pool.join()
+    # r = get_intent_rec_result(sent,aircor_name)
+    # intent_score,intent = r[0],r[1]
+    # r = get_str_match_result(sent,aircor_name)
+    # result_score,doc,seg_list_without_stopword = r[0],r[1],r[2]
+
+    intent_score,intent = intent_recognization_func(sent)#意图识别
+    result_score,doc,seg_list_without_stopword = str_match_func(sent,aircor)#字符串匹配
+    end = time.time()
+    print(str(round(end-start,3))+'s')
+
+    final_result_list = []
+    #final_result_tag_list = []
+    if intent_score > 0.92:#意图识别的结果超过阈值
+        with open(sys.path[0] + '/stastic/webSearch_data/web2intent.json','r',encoding='utf8') as fp:
+            web2intent_data = json.load(fp)
+        fp.close()
+        web_title = "未找到相关页面"
+        for key in web2intent_data:
+            if web2intent_data[key] == intent:
+                web_title = key
+                break
+        if web_title != "未找到相关页面":
+            with open(sys.path[0] + '/stastic/webSearch_data/all_data.json','r',encoding='utf8') as fp:
+                json_data = json.load(fp)
+            fp.close()
+            if aircor_name == "所有航司":
+                aircor_list = ["海南航空" , "南方航空", "中国国际航空"]
+            else:
+                aircor_list = [aircor_name]
+            for aircor in aircor_list:
+                for kk in json_data[aircor]:
+                    for key in json_data[aircor][kk]:
+                        for sub_dict in json_data[aircor][kk][key]:
+                            for sub_key in sub_dict:
+                                if sub_key == web_title:
+                                    web_title = aircor + "@" + kk + "@" + key + "@" + sub_key
+                                    break
+            if len(web_title.split("@")) <= 1:
+                pass
+            else:
+                if web_title in result_score and result_score[web_title] < 25:
+                    if intent_score > 0.96:
+                        result_score[web_title] = 35
+                    else:
+                        result_score[web_title] = 25
     a = sorted(result_score.items(), key=lambda x: x[1], reverse=True)
 
-    result_list = []
     result_score_list = []
     if a != []:
         max_score = a[0][1]
     for result_set in a:
         air_name = ""
-        if result_set[1] > 3 :
+        #if result_set[1] > 3 :
+        if max_score >= 20:
         #if (result_set[1] > 10 and max_score > 10) or max_score < 10:
-            result_score_list.append(result_set)
-    #         json_name = get_target_value(result_set[0],json_data,[])
-    #         for aircor_name in json_data:
-    #             if get_target_value(result_set[0],json_data[aircor_name],[]) != []:
-    #                 air_name = aircor_name
-    #         if isinstance(json_name[0],str):
-    #             result_list.append({"title":result_set[0],"source":air_name, "text":json_to_str(sys.path[0] + '/stastic/webSearch_data/json_data/' + json_name[0])})
-    # #print(result_list)
-    #result_score_list_str = ""
-    #print(result_score_list)
-    final_result_list = []
+            if result_set[1] >= 20:
+                result_score_list.append(result_set)
+        elif max_score >= 10 and max_score < 20:
+            if result_set[1] >= 10:
+                result_score_list.append(result_set)
+        else:
+            if result_set[1] >= 5:
+                result_score_list.append(result_set)
+
+            # url_str = "/api/content_search?query=" + web_title
+            # if web_title in doc:
+            #     item_text = "".join(doc[web_title])
+            #     item_text_list = []
+            #     for t in item_text.split("。"):
+            #         item_text_list.append(t.strip("，"))
+            #     description,high_line = get_query_description(seg_list_without_stopword,item_text_list)
+            # else:
+            #     description,high_line = "",[]
+            # result_score_list_str =  '<a href=' + url_str + '>'  + str(web_title.split("@")[-1])  +  '</a>'
+            # final_result_list.append({"title":result_score_list_str,"source":web_title.split("@")[0],"score":intent_score,"content":description + "...","high_line":high_line})
+            # final_result_tag_list.append(web_title)
+    
     for item in result_score_list:
         result_score_list_str = ""
         url_str = "/api/content_search?query=" + item[0]
-        text_score = result_dict[item[0]] * 10 if item[0] in result_dict else 0
-        synonyms_score = synonyms_result_dict[item[0]] * 5 if item[0] in synonyms_result_dict else 0
-        BM25_score = BM25_score_dict[item[0]] if item[0] in BM25_score_dict else 0
+        # text_score = result_dict[item[0]] * 10 if item[0] in result_dict else 0
+        # synonyms_score = synonyms_result_dict[item[0]] * 5 if item[0] in synonyms_result_dict else 0
+        # BM25_score = BM25_score_dict[item[0]] if item[0] in BM25_score_dict else 0
         if item[0] in doc:
             item_text = "".join(doc[item[0]])
             item_text_list = []
@@ -447,10 +627,53 @@ def web_search_func(sent,aircor):#根据query返回页面
             description,high_line = get_query_description(seg_list_without_stopword,item_text_list)
         else:
             description,high_line = "",[]
-        every_score_str = "text_score:" + str(text_score) + ",synonyms_score: " + str(synonyms_score) + ",BM25_score:" + str(BM25_score)
+        #every_score_str = "text_score:" + str(text_score) + ",synonyms_score: " + str(synonyms_score) + ",BM25_score:" + str(BM25_score)
         description_str = ",description:" + description + "high_line:" + str(high_line)
         result_score_list_str =  '<a href=' + url_str + '>'  + str(item[0].split("@")[-1])  +  '</a>'
         final_result_list.append({"title":result_score_list_str,"source":item[0].split("@")[0],"score":item[1],"content":description + "...","high_line":high_line})
     #print(result_score_list_str)
     return final_result_list
     
+def test(request): #测试
+    sent = request.GET.get("query", "托运行李")
+    data = xlrd.open_workbook(sys.path[0] + '/stastic/webSearch_data/new_data.xlsx')
+    table = data.sheet_by_index(0)
+    rows = table.nrows
+    right_num ,error_num = 0,0
+
+    #创建一个workbook 设置编码
+    workbook = xlwt.Workbook(encoding='utf-8')
+    # 创建一个worksheet
+    worksheet = workbook.add_sheet('sheet 1')
+
+    for i in range(1,rows):
+        print(i)
+        if i == 10000:
+            break
+        j = 0
+        row_data = table.row_values(i)
+        intent_score,result = intent_recognization_func(row_data[0])
+        worksheet.write(i, j, label = row_data[0])
+        j += 1
+        if intent_score > 0.92:
+            if row_data[4] != "":
+                intent = row_data[2] + "@" + row_data[3] + "@" + row_data[4]
+            else:
+                intent = row_data[2] + "@" + row_data[3]
+            if intent == result:
+                right_num += 1
+            else:
+                error_num += 1
+            for row_intent in intent.split("@"):
+                worksheet.write(i, j, label = row_intent)
+                j += 1
+        worksheet.write(i, 4, label = row_data[1])
+        worksheet.write(i, 5, label = row_data[2])
+        worksheet.write(i, 6, label = row_data[3])
+        worksheet.write(i, 7, label = row_data[4])
+    workbook.save('new_data_result_1.xlsx')
+
+    result_list = {"right_num":right_num,"error_num":error_num,"all_num":rows}
+    response = HttpResponse(json.dumps(result_list, ensure_ascii=False))
+    response["Access-Control-Allow-Origin"] = "*"
+    return response
