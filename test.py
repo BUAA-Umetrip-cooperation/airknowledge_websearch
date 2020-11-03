@@ -124,26 +124,30 @@ def test(): #测试
     workbook = xlwt.Workbook(encoding='utf-8')
     # 创建一个worksheet
     worksheet = workbook.add_sheet('sheet 1')
-
+    k = 1
     for i in range(1,rows):
         try:
+            if i == 20:
+                break
             j = 0
             row_data = table.row_values(i)
-            intent_score,result = intent_recognization_func(row_data[0])
-            worksheet.write(i, j, label = row_data[0])
-            j += 1
-            if intent_score > 0.92:
-                if row_data[4] != "":
-                    intent = row_data[2] + "@" + row_data[3] + "@" + row_data[4]
-                else:
-                    intent = row_data[2] + "@" + row_data[3]
-                for row_intent in intent.split("@"):
-                    worksheet.write(i, j, label = row_intent)
-                    j += 1
-            worksheet.write(i, 4, label = row_data[1])
-            worksheet.write(i, 5, label = row_data[2])
-            worksheet.write(i, 6, label = row_data[3])
-            worksheet.write(i, 7, label = row_data[4])
+            if "搜索" in row_data[5]:
+                intent_score,result = intent_recognization_func(row_data[0])
+                worksheet.write(k, j, label = row_data[0])
+                j += 1
+                if intent_score > 0.92:
+                    if row_data[4] != "":
+                        intent = row_data[2] + "@" + row_data[3] + "@" + row_data[4]
+                    else:
+                        intent = row_data[2] + "@" + row_data[3]
+                    for row_intent in intent.split("@"):
+                        worksheet.write(k, j, label = row_intent)
+                        j += 1
+                worksheet.write(k, 4, label = row_data[1])
+                worksheet.write(k, 5, label = row_data[2])
+                worksheet.write(k, 6, label = row_data[3])
+                worksheet.write(k, 7, label = row_data[4])
+                k += 1
         except Exception as e:
             print(e)
     workbook.save(sys.path[0] + '/stastic/webSearch_data/new_data_result_1.xlsx')
