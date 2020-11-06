@@ -291,16 +291,13 @@ def bit_product_sum(x, y):
 
 def cosine_similarity(x, y, norm=False):
     """ 计算两个向量x和y的余弦相似度 """
-    assert len(x) == len(y), "len(x) != len(y)"
-    zero_list = [0] * len(x)
-    if (x == zero_list).all() or (y == zero_list).all():
-        return float(1) if x == y else float(0)
-
-    # method 1
-    res = np.array([[x[i] * y[i], x[i] * x[i], y[i] * y[i]] for i in range(len(x))])
-    cos = sum(res[:, 0]) / (np.sqrt(sum(res[:, 1])) * np.sqrt(sum(res[:, 2])))
-
-    return 0.5 * cos + 0.5 if norm else cos  # 归一化到[0, 1]区间内
+    vector_a = np.mat(x)
+    vector_b = np.mat(y)
+    num = float(vector_a * vector_b.T)
+    denom = np.linalg.norm(vector_a) * np.linalg.norm(vector_b)
+    cos = num / denom
+    sim = 0.5 + 0.5 * cos
+    return sim
 
 bertvector_model = None
 
@@ -315,23 +312,14 @@ query2encode = {}
 def get_query2encode():
     global query2encode
     if query2encode == {}:
-        bert = get_bertvector()
-        data = xlrd.open_workbook(sys.path[0] + '/stastic/webSearch_data/intent_data.xlsx')
-        table = data.sheet_by_index(0)
-        rows = table.nrows
-        for i in range(1,rows):
-            row_data = table.row_values(i)
-            if row_data[0] != "" and "搜索" in row_data[4]:
-                if row_data[3] != "":
-                    intent = row_data[1] + "@" + row_data[2] + "@" + row_data[3]
-                else:
-                    intent = row_data[1] + "@" + row_data[2]
-                if intent not in query2encode:
-                    query2encode[intent] = [ bert.encode([row_data[0]])[0] ]
-                else:
-                    query2encode[intent].append(bert.encode([row_data[0]])[0])
-        # with open(sys.path[0] + "/stastic/webSearch_data/query2encode.json", "w", encoding='utf-8') as fp:
-        #     fp.write(json.dumps(query2encode, ensure_ascii=False, indent=4))
+        with open(sys.path[0] + '/stastic/webSearch_data/query2encode_all.json','r',encoding='utf8') as fp:
+            json_data = json.load(fp)
+        fp.close()
+        for key in json_data:
+            if key not in query2encode:
+                query2encode[key] = np.array(json_data[key])
+                #query2encode[key] = res/(res**2).sum()**0.5
+        print("载入query2encode成功！")
     return query2encode
 
 def intent_recognization(request): #意图识别
@@ -343,6 +331,34 @@ def intent_recognization(request): #意图识别
     response = HttpResponse(json.dumps(result_list, ensure_ascii=False))
     response["Access-Control-Allow-Origin"] = "*"
     return response
+
+def intent_recognization_from3w(request): #从3W条语料中匹配最相近的五条语料
+    sent = request.GET.get("sent", "托运行李流程")
+
+    result_list = intent_recognization_from3w_func(sent)
+
+    response = HttpResponse(json.dumps(result_list, ensure_ascii=False))
+    response["Access-Control-Allow-Origin"] = "*"
+    return response
+
+def intent_recognization_from3w_func(sent):#从3W条语料中匹配最相近的五条语料
+    max_score = 0
+    intent = "未识别到意图"
+    max_score_list = []
+    bert = get_bertvector()
+    query_encode = bert.encode([sent])
+    query2encode = get_query2encode()
+    score_dict = {}
+    for key in query2encode:
+        score_dict[key] = cosine_similarity(query_encode[0],query2encode[key])
+    top_five_list = []
+    #a = sorted(score_dict.items(), key=lambda x: x[1], reverse=True) #根据相似度从大到小排序
+    for i in range(5):
+        res_max = max(score_dict, key=lambda x: score_dict[x])
+        top_five_list.append((res_max,score_dict[res_max]))
+        score_dict.pop(res_max)
+    return top_five_list
+
 
 def intent_recognization_func(sent):#意图识别
     max_score = 0
@@ -369,11 +385,6 @@ def intent_recognization_func(sent):#意图识别
             max_score_list = score_list
     #print(max_score,intent,max_score_list)
     return max_score,intent
-    # bert = get_bertvector()
-    # v1 = bert.encode(["可以提前选航班座位吗"])
-    # v2 = bert.encode(["哪里可以提前选座位"])
-    # #print(v1,v2)
-    # print(cosine_similarity(v1[0],v2[0]))
 
 def str_match(request): #字符串匹配
     sent = request.GET.get("sent", "托运行李")
